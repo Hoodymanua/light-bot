@@ -1,19 +1,17 @@
 import os
 import io
+import base64
 import asyncio
+import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-from google import genai
-from PIL import Image
 
-# Читання ключів із середовища хостингу
 TELEGRAM_BOT_TOKEN = "8734121752:AAEZsFdAHEM-UhhediXeb_ZN0lmmpiB6zwc"
-GEMINI_API_KEY = "AQ.Ab8RN6LkbaA_3MxBpnfhCzhnCgKHbkJlkmzmoR098BBjm6_bLw"
+GROQ_API_KEY = "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"
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """
 Ти — асистент-координатор для компанії друзів у Львові. Твоє завдання — аналізувати офіційні графіки погодинних відключень «Львівобленерго» із зображення, зіставляти їх із підгрупами учасників і вираховувати спільні слоти зі світлом для спільних ігор чи зідзвонів.
@@ -49,20 +47,39 @@ async def process_schedule(message: Message):
         
         photo_bytes = io.BytesIO()
         await bot.download_file(photo_file.file_path, destination=photo_bytes)
-        photo_bytes.seek(0)
-        
-        img = Image.open(photo_bytes)
+        b64_img = base64.b64encode(photo_bytes.getvalue()).decode("utf-8")
 
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[SYSTEM_PROMPT, img]
-        )
-        
-        await status.edit_text(response.text)
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.2-11b-vision-preview",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": SYSTEM_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
+                        }
+                    ]
+                }
+            ]
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload) as resp:
+                data = await resp.json()
+                if "error" in data:
+                    await status.edit_text(f"⚠️ Помилка AI: {data['error'].get('message', data['error'])}")
+                    return
+                text = data["choices"][0]["message"]["content"]
+                await status.edit_text(text)
     except Exception as e:
         await status.edit_text(f"⚠️ Помилка: {e}")
 
-# Фоновий веб-сервер для хмарного сервісу
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
